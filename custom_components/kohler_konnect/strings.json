@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Kohler Konnect",
+        "description": "Enter your Kohler Konnect account credentials.",
+        "data": {
+          "username": "Email address",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect. Check credentials and try again.",
+      "no_devices": "No devices found on this account."
+    },
+    "abort": {
+      "already_configured": "This account is already configured."
+    }
+  }
+}

@@ -1,0 +1,8 @@
+---
+name: Kohler Konnect
+country_code: US
+categories:
+  - Climate
+config_flow: true
+integration_type: hub
+iot_class: Cloud Polling
