@@ -1,5 +1,5 @@
 {
-  "domain": "kohler_konnect",
+  "domain": "kohler",
   "name": "Kohler Konnect",
   "codeowners": ["@kenyonj"],
   "config_flow": true,

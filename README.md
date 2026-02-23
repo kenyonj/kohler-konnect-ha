@@ -43,7 +43,7 @@ An unofficial Home Assistant integration for **Kohler Konnect** devices, with fu
 
 ### Manual
 
-1. Copy `custom_components/kohler_konnect/` into your HA `custom_components/` directory
+1. Copy `custom_components/kohler/` into your HA `custom_components/` directory
 2. Restart Home Assistant
 
 ---
@@ -58,21 +58,21 @@ An unofficial Home Assistant integration for **Kohler Konnect** devices, with fu
 
 ## Services
 
-### `kohler_konnect.start_warmup`
+### `kohler.start_warmup`
 Pre-heats the shower to your target temperature — no water flows until you get in.
 
-### `kohler_konnect.start_preset`
+### `kohler.start_preset`
 Starts a saved preset by ID.
 
 ```yaml
-service: kohler_konnect.start_preset
+service: kohler.start_preset
 target:
   entity_id: water_heater.anthem_shower
 data:
   preset_id: "1"
 ```
 
-### `kohler_konnect.stop_shower`
+### `kohler.stop_shower`
 Immediately stops all water flow.
 
 ---
@@ -86,7 +86,7 @@ automation:
     - platform: time
       at: "06:50:00"
   action:
-    - service: kohler_konnect.start_warmup
+    - service: kohler.start_warmup
       target:
         entity_id: water_heater.anthem_shower
 ```
@@ -99,7 +99,7 @@ automation:
       entity_id: input_boolean.morning_routine
       to: "on"
   action:
-    - service: kohler_konnect.start_preset
+    - service: kohler.start_preset
       target:
         entity_id: water_heater.anthem_shower
       data:

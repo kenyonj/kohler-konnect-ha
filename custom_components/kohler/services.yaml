@@ -3,7 +3,7 @@ start_warmup:
   description: Pre-heat the Kohler Anthem shower without running water.
   target:
     entity:
-      integration: kohler_konnect
+      integration: kohler
       domain: water_heater
   fields: {}
 
@@ -12,7 +12,7 @@ start_preset:
   description: Start a saved preset on the Kohler Anthem shower.
   target:
     entity:
-      integration: kohler_konnect
+      integration: kohler
       domain: water_heater
   fields:
     preset_id:
@@ -27,6 +27,6 @@ stop_shower:
   description: Stop all water flow immediately.
   target:
     entity:
-      integration: kohler_konnect
+      integration: kohler
       domain: water_heater
   fields: {}

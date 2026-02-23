@@ -1,6 +1,6 @@
 """Constants for Kohler Konnect integration."""
 
-DOMAIN = "kohler_konnect"
+DOMAIN = "kohler"
 SCAN_INTERVAL = 30  # seconds
 
 # Auth
