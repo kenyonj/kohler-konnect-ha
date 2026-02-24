@@ -1,7 +1,7 @@
 """Constants for Kohler Konnect integration."""
 
 DOMAIN = "kohler"
-SCAN_INTERVAL = 30  # seconds
+SCAN_INTERVAL = 10  # seconds
 
 # Auth
 B2C_TENANT = "konnectkohler.onmicrosoft.com"

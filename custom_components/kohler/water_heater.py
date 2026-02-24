@@ -1,6 +1,7 @@
 """Water heater entity for Kohler Konnect Anthem shower."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -65,6 +66,7 @@ class KohlerAnthemShower(CoordinatorEntity, WaterHeaterEntity):
         self._api = api
         self._device_id = device_id
         self._device = device
+        self._optimistic_operation: str | None = None
 
     @property
     def unique_id(self) -> str:
@@ -80,6 +82,11 @@ class KohlerAnthemShower(CoordinatorEntity, WaterHeaterEntity):
             "serial_number": self._device.get("serialNumber"),
         }
 
+    def _handle_coordinator_update(self) -> None:
+        """Clear optimistic state when real data arrives."""
+        self._optimistic_operation = None
+        super()._handle_coordinator_update()
+
     def _adv(self) -> dict:
         return (
             self.coordinator.data.get(self._device_id, {})
@@ -87,19 +94,24 @@ class KohlerAnthemShower(CoordinatorEntity, WaterHeaterEntity):
             .get("state", {})
         )
 
-    @property
-    def current_operation(self) -> str:
+    def _real_operation(self) -> str:
         adv = self._adv()
         warmup_state = adv.get("warmUpState", {}).get("state", "warmUpNotInProgress")
         if warmup_state != "warmUpNotInProgress":
             return OPERATION_WARMUP
 
-        # Check if any valve is flowing
         for valve in adv.get("valveState", []):
             if float(valve.get("atFlow", "0")) > 0:
                 return OPERATION_RUNNING
 
         return OPERATION_OFF
+
+    @property
+    def current_operation(self) -> str:
+        # Return optimistic state immediately after a command
+        if self._optimistic_operation is not None:
+            return self._optimistic_operation
+        return self._real_operation()
 
     @property
     def current_temperature(self) -> float | None:
@@ -126,6 +138,25 @@ class KohlerAnthemShower(CoordinatorEntity, WaterHeaterEntity):
             pass
         return 39.3
 
+    async def _send_command_and_refresh(self, operation: str, coro) -> None:
+        """Send a command, optimistically update state, then re-poll after a delay."""
+        # Set optimistic state immediately so UI updates right away
+        self._optimistic_operation = operation
+        self.async_write_ha_state()
+
+        try:
+            await coro
+        except Exception as err:
+            _LOGGER.error("Kohler command failed: %s", err)
+            self._optimistic_operation = None
+            self.async_write_ha_state()
+            return
+
+        # Poll once immediately, then again after 5s to catch delayed API updates
+        await self.coordinator.async_request_refresh()
+        await asyncio.sleep(5)
+        await self.coordinator.async_request_refresh()
+
     async def async_set_temperature(self, **kwargs: Any) -> None:
         temp = kwargs.get("temperature")
         if temp is None:
@@ -142,16 +173,18 @@ class KohlerAnthemShower(CoordinatorEntity, WaterHeaterEntity):
 
     async def async_set_operation_mode(self, operation_mode: str) -> None:
         if operation_mode == OPERATION_WARMUP:
-            await self.hass.async_add_executor_job(
+            coro = self.hass.async_add_executor_job(
                 self._api.start_warmup, self._device_id
             )
         elif operation_mode == OPERATION_OFF:
-            await self.hass.async_add_executor_job(
+            coro = self.hass.async_add_executor_job(
                 self._api.stop_shower, self._device_id
             )
         elif operation_mode == OPERATION_RUNNING:
-            # Start preset 1 (default/first saved preset)
-            await self.hass.async_add_executor_job(
+            coro = self.hass.async_add_executor_job(
                 self._api.start_preset, self._device_id, "1"
             )
-        await self.coordinator.async_request_refresh()
+        else:
+            return
+
+        await self._send_command_and_refresh(operation_mode, coro)
