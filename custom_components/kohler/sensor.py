@@ -1,12 +1,17 @@
 """Sensor entities for Kohler Konnect."""
+
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from kohler_anthem.models import Device, DeviceState
+
+from . import KohlerKonnectCoordinator
 from .const import DOMAIN
 
 
@@ -15,118 +20,120 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = data["coordinator"]
+    """Set up Kohler Konnect sensors."""
+    coordinator: KohlerKonnectCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities = []
-    for device_id, state in coordinator.data.items():
-        device = state["device"]
+    entities: list[SensorEntity] = []
+    for device in coordinator.devices:
         entities += [
-            KohlerConnectionSensor(coordinator, device_id, device),
-            KohlerTemperatureSensor(coordinator, device_id, device),
-            KohlerWarmupStateSensor(coordinator, device_id, device),
-            KohlerCurrentPresetSensor(coordinator, device_id, device),
+            KohlerConnectionSensor(coordinator, device),
+            KohlerTargetTemperatureSensor(coordinator, device),
+            KohlerWarmupStateSensor(coordinator, device),
+            KohlerActivePresetSensor(coordinator, device),
         ]
     async_add_entities(entities)
 
 
-class KohlerBaseSensor(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator, device_id, device):
+class KohlerBaseSensor(CoordinatorEntity[KohlerKonnectCoordinator], SensorEntity):
+    """Base class for Kohler Konnect sensors."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self, coordinator: KohlerKonnectCoordinator, device: Device
+    ) -> None:
         super().__init__(coordinator)
-        self._device_id = device_id
+        self._device_id = device.device_id
         self._device = device
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict:
         return {
             "identifiers": {(DOMAIN, self._device_id)},
-            "name": self._device.get("logicalName", "Kohler Anthem Shower"),
+            "name": self._device.logical_name or "Kohler Anthem Shower",
             "manufacturer": "Kohler",
             "model": "Anthem Shower (GCS)",
-            "sw_version": None,
+            "serial_number": self._device.serial_number,
         }
 
-    def _state_data(self):
-        return self.coordinator.data.get(self._device_id, {})
-
-    def _advanced(self):
-        return self._state_data().get("advanced_state", {})
-
-    def _evo(self):
-        return self._state_data().get("evo_state", {})
+    @property
+    def _state(self) -> DeviceState | None:
+        return self.coordinator.data.get(self._device_id)
 
 
 class KohlerConnectionSensor(KohlerBaseSensor):
+    """Reports the device's cloud connection state."""
+
     _attr_name = "Connection State"
     _attr_icon = "mdi:wifi"
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         return f"{self._device_id}_connection"
 
     @property
-    def native_value(self):
-        return self._evo().get("connectionState", "Unknown")
+    def native_value(self) -> str | None:
+        state = self._state
+        if state is None:
+            return None
+        return state.connection_state.value
 
 
-class KohlerTemperatureSensor(KohlerBaseSensor):
+class KohlerTargetTemperatureSensor(KohlerBaseSensor):
+    """Reports the primary valve's target temperature."""
+
     _attr_name = "Target Temperature"
-    _attr_native_unit_of_measurement = "°C"
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_icon = "mdi:thermometer-water"
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         return f"{self._device_id}_target_temp"
 
     @property
-    def native_value(self):
-        try:
-            valves = self._advanced().get("state", {}).get("valveState", [])
-            if valves:
-                return float(valves[0].get("temperatureSetpoint", 0))
-        except (ValueError, KeyError, IndexError):
-            pass
+    def native_value(self) -> float | None:
+        state = self._state
+        if state is None:
+            return None
+        for valve in state.state.valve_state:
+            if valve.valve_index == "Valve1":
+                return valve.temperature_setpoint or None
         return None
 
 
 class KohlerWarmupStateSensor(KohlerBaseSensor):
+    """Reports the warmup state machine value."""
+
     _attr_name = "Warmup State"
     _attr_icon = "mdi:shower-head"
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         return f"{self._device_id}_warmup_state"
 
     @property
-    def native_value(self):
-        try:
-            return (
-                self._advanced()
-                .get("state", {})
-                .get("warmUpState", {})
-                .get("state", "unknown")
-            )
-        except (KeyError, AttributeError):
-            return "unknown"
+    def native_value(self) -> str | None:
+        state = self._state
+        if state is None:
+            return None
+        return state.state.warm_up_state.state.value
 
 
-class KohlerCurrentPresetSensor(KohlerBaseSensor):
+class KohlerActivePresetSensor(KohlerBaseSensor):
+    """Reports the currently active preset/experience id (or 'none')."""
+
     _attr_name = "Active Preset"
     _attr_icon = "mdi:playlist-play"
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         return f"{self._device_id}_active_preset"
 
     @property
-    def native_value(self):
-        try:
-            pid = (
-                self._advanced()
-                .get("state", {})
-                .get("presetOrExperienceId", "0")
-            )
-            return pid if pid != "0" else "none"
-        except (KeyError, AttributeError):
+    def native_value(self) -> str:
+        state = self._state
+        if state is None:
             return "none"
+        preset_id = state.state.active_preset_id
+        return str(preset_id) if preset_id is not None else "none"
