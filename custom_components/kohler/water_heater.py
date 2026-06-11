@@ -29,12 +29,23 @@ OPERATION_OFF = "off"
 OPERATION_WARMUP = "warmup"
 OPERATION_RUNNING = "running"
 
-DEFAULT_TARGET_TEMP = 39.3
+# Temperature bounds expressed per unit. The Kohler API reports and accepts
+# setpoints in the *account's* unit, so the entity presents that unit directly
+# and only converts to Celsius at the library's write boundary.
+TEMP_MIN_C, TEMP_MAX_C, TEMP_DEFAULT_C = 15.0, 45.0, 39.3
+TEMP_MIN_F, TEMP_MAX_F, TEMP_DEFAULT_F = 60.0, 113.0, 103.0
 
 SUPPORT_FLAGS = (
     WaterHeaterEntityFeature.TARGET_TEMPERATURE
     | WaterHeaterEntityFeature.OPERATION_MODE
 )
+
+
+def _to_celsius(value: float, unit: str) -> float:
+    """Convert an account-unit temperature to Celsius for library writes."""
+    if unit == "Fahrenheit":
+        return (value - 32.0) * 5.0 / 9.0
+    return value
 
 
 async def async_setup_entry(
@@ -57,9 +68,6 @@ class KohlerAnthemShower(
     _attr_has_entity_name = True
     _attr_name = "Anthem Shower"
     _attr_icon = "mdi:shower-head"
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_min_temp = 15.0
-    _attr_max_temp = 45.0
     _attr_target_temperature_step = 0.5
     _attr_supported_features = SUPPORT_FLAGS
     _attr_operation_list = [OPERATION_OFF, OPERATION_WARMUP, OPERATION_RUNNING]
@@ -71,11 +79,20 @@ class KohlerAnthemShower(
         self._device_id = device.device_id
         self._device = device
         self._optimistic_operation: str | None = None
-        # Local target-temperature setpoint. The Kohler API has no "set
-        # temperature without running water" command, so we hold the desired
-        # temperature locally and apply it when the shower is started or while
-        # it is running.
+        # Local target-temperature setpoint (in the account's unit). The Kohler
+        # API has no "set temperature without running water" command, so we hold
+        # the desired temperature locally and apply it on start / while running.
         self._target_temperature: float | None = None
+
+        # Present temperatures in the account's unit so values round-trip with
+        # what the API returns (it does not convert).
+        fahrenheit = coordinator.temperature_unit == "Fahrenheit"
+        self._attr_temperature_unit = (
+            UnitOfTemperature.FAHRENHEIT if fahrenheit else UnitOfTemperature.CELSIUS
+        )
+        self._attr_min_temp = TEMP_MIN_F if fahrenheit else TEMP_MIN_C
+        self._attr_max_temp = TEMP_MAX_F if fahrenheit else TEMP_MAX_C
+        self._default_target = TEMP_DEFAULT_F if fahrenheit else TEMP_DEFAULT_C
 
     @property
     def unique_id(self) -> str:
@@ -121,7 +138,7 @@ class KohlerAnthemShower(
 
     @property
     def current_temperature(self) -> float | None:
-        """Actual measured outlet temperature (Valve1 / outlet2)."""
+        """Measured outlet temperature (Valve1 / outlet2), in the account unit."""
         state = self._state
         if state is None:
             return None
@@ -141,9 +158,14 @@ class KohlerAnthemShower(
             for valve in state.state.valve_state:
                 if valve.valve_index == "Valve1" and valve.temperature_setpoint:
                     return valve.temperature_setpoint
-        return DEFAULT_TARGET_TEMP
+        return self._default_target
 
     # -- commands ---------------------------------------------------------- #
+
+    def _target_celsius(self) -> float:
+        """Current target as Celsius for the library write API."""
+        target = self.target_temperature or self._default_target
+        return _to_celsius(target, self.coordinator.temperature_unit)
 
     async def _run_command_and_refresh(self, operation: str, coro: Any) -> None:
         """Send a command, optimistically update, then re-poll twice."""
@@ -177,7 +199,9 @@ class KohlerAnthemShower(
                     self.coordinator.tenant_id,
                     self._device_id,
                     Outlet.SHOWERHEAD,
-                    temperature_celsius=float(temp),
+                    temperature_celsius=_to_celsius(
+                        float(temp), self.coordinator.temperature_unit
+                    ),
                 ),
             )
 
@@ -194,7 +218,7 @@ class KohlerAnthemShower(
                 tenant_id,
                 self._device_id,
                 Outlet.SHOWERHEAD,
-                temperature_celsius=self.target_temperature or DEFAULT_TARGET_TEMP,
+                temperature_celsius=self._target_celsius(),
             )
         else:
             return
