@@ -1,5 +1,9 @@
-"""Switch entities for Kohler Konnect (warmup, presets)."""
+"""Switch entity for Kohler Konnect (shower warmup)."""
+
 from __future__ import annotations
+
+import logging
+from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
@@ -7,7 +11,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from kohler_anthem.exceptions import KohlerAnthemError
+from kohler_anthem.models import Device
+
+from . import KohlerKonnectCoordinator
 from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -15,67 +25,62 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = data["coordinator"]
-    api = data["api"]
-
-    entities = []
-    for device_id, state in coordinator.data.items():
-        device = state["device"]
-        # Warmup switch
-        entities.append(KohlerWarmupSwitch(coordinator, api, device_id, device))
-
-    async_add_entities(entities)
+    """Set up the Kohler Konnect warmup switch."""
+    coordinator: KohlerKonnectCoordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities(
+        KohlerWarmupSwitch(coordinator, device) for device in coordinator.devices
+    )
 
 
-class KohlerWarmupSwitch(CoordinatorEntity, SwitchEntity):
-    """Switch to trigger shower warmup."""
+class KohlerWarmupSwitch(CoordinatorEntity[KohlerKonnectCoordinator], SwitchEntity):
+    """Switch to start/stop shower warmup."""
 
+    _attr_has_entity_name = True
     _attr_name = "Shower Warmup"
     _attr_icon = "mdi:shower"
 
-    def __init__(self, coordinator, api, device_id, device):
+    def __init__(
+        self, coordinator: KohlerKonnectCoordinator, device: Device
+    ) -> None:
         super().__init__(coordinator)
-        self._api = api
-        self._device_id = device_id
+        self._device_id = device.device_id
         self._device = device
-        self._is_on = False
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         return f"{self._device_id}_warmup_switch"
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict:
         return {
             "identifiers": {(DOMAIN, self._device_id)},
-            "name": self._device.get("logicalName", "Kohler Anthem Shower"),
+            "name": self._device.logical_name or "Kohler Anthem Shower",
             "manufacturer": "Kohler",
             "model": "Anthem Shower (GCS)",
+            "serial_number": self._device.serial_number,
         }
 
     @property
-    def is_on(self):
-        try:
-            state = (
-                self.coordinator.data.get(self._device_id, {})
-                .get("advanced_state", {})
-                .get("state", {})
-                .get("warmUpState", {})
-                .get("state", "warmUpNotInProgress")
-            )
-            return state != "warmUpNotInProgress"
-        except (KeyError, AttributeError):
-            return False
+    def is_on(self) -> bool:
+        state = self.coordinator.data.get(self._device_id)
+        return bool(state and state.is_warming_up)
 
-    async def async_turn_on(self, **kwargs):
-        await self.hass.async_add_executor_job(
-            self._api.start_warmup, self._device_id
-        )
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        try:
+            await self.coordinator.client.start_warmup(
+                self.coordinator.tenant_id, self._device_id
+            )
+        except KohlerAnthemError as err:
+            _LOGGER.error("Failed to start warmup: %s", err)
+            return
         await self.coordinator.async_request_refresh()
 
-    async def async_turn_off(self, **kwargs):
-        await self.hass.async_add_executor_job(
-            self._api.stop_shower, self._device_id
-        )
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        try:
+            await self.coordinator.client.stop_warmup(
+                self.coordinator.tenant_id, self._device_id
+            )
+        except KohlerAnthemError as err:
+            _LOGGER.error("Failed to stop warmup: %s", err)
+            return
         await self.coordinator.async_request_refresh()

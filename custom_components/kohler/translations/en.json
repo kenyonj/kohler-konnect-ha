@@ -3,19 +3,33 @@
     "step": {
       "user": {
         "title": "Kohler Konnect",
-        "description": "Enter your Kohler Konnect account credentials.",
+        "description": "Enter your Kohler Konnect account credentials. The APIM subscription key and B2C refresh token are required for shower control. See the documentation for how to capture them.",
         "data": {
           "username": "Email address",
-          "password": "Password"
+          "password": "Password",
+          "apim_subscription_key": "APIM subscription key",
+          "b2c_refresh_token": "B2C refresh token",
+          "client_id": "Client ID (advanced)",
+          "api_resource": "API resource (advanced)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Kohler Konnect",
+        "description": "Your Kohler B2C refresh token has expired or was revoked. Capture a new one with `python -m kohler_anthem.b2c_signin` and paste it below.",
+        "data": {
+          "b2c_refresh_token": "B2C refresh token"
         }
       }
     },
     "error": {
-      "cannot_connect": "Unable to connect. Check credentials and try again.",
+      "cannot_connect": "Unable to connect. Check your credentials and APIM key, then try again.",
+      "invalid_auth": "Invalid username or password.",
+      "invalid_b2c_refresh_token": "The B2C refresh token was rejected. Capture a fresh one and try again.",
       "no_devices": "No devices found on this account."
     },
     "abort": {
-      "already_configured": "This account is already configured."
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Re-authentication was successful."
     }
   }
 }

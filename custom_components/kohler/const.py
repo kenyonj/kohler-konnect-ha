@@ -1,31 +1,43 @@
-"""Constants for Kohler Konnect integration."""
+"""Constants for the Kohler Konnect integration."""
+
+from __future__ import annotations
 
 DOMAIN = "kohler"
-SCAN_INTERVAL = 10  # seconds
 
-# Auth
-B2C_TENANT = "konnectkohler.onmicrosoft.com"
-B2C_POLICY = "B2C_1_ROPC_Auth"
-B2C_CLIENT_ID = "8caf9530-1d13-48e6-867c-0f082878debc"
-B2C_SCOPE = (
-    "openid "
-    "https://konnectkohler.onmicrosoft.com/"
-    "f5d87f3d-bdeb-4933-ab70-ef56cc343744/apiaccess "
-    "offline_access"
-)
-B2C_TOKEN_URL = (
-    f"https://konnectkohler.b2clogin.com/{B2C_TENANT}"
-    f"/{B2C_POLICY}/oauth2/v2.0/token"
-)
+# Polling interval for the DataUpdateCoordinator (seconds).
+SCAN_INTERVAL = 10
 
-# Service token (bootstrap — no user needed)
-SERVICE_TOKEN_URL = (
-    "https://az-amer-prod-kohlerkonnect-apim.azure-api.net/token/api/v1/token/"
-)
-SERVICE_TOKEN_APIM_KEY = "ca2f50cbc01845e9af356f866b16c9f1"
+# ---------------------------------------------------------------------------
+# Config-entry keys
+# ---------------------------------------------------------------------------
+# username / password come from homeassistant.const (CONF_USERNAME/CONF_PASSWORD).
+CONF_APIM_KEY = "apim_subscription_key"
+CONF_CLIENT_ID = "client_id"
+CONF_API_RESOURCE = "api_resource"
+CONF_TENANT_ID = "tenant_id"
+# Refresh token issued by the B2C_1A_signin policy. Required for /commands/*
+# writes (warmup, presets, valve control) — Kohler's backend rejects the
+# ROPC-policy token on those endpoints with HTTP 403. Seed once per account:
+#
+#   python -m kohler_anthem.b2c_signin url        # prints an /authorize URL
+#   # open it, sign in, copy the msauth:// redirect URL from the address bar
+#   python -m kohler_anthem.b2c_signin exchange '<msauth://...>'
+#
+# The exchange step prints the refresh_token to paste into the config flow.
+CONF_B2C_REFRESH_TOKEN = "b2c_refresh_token"
 
-# API
-API_BASE = "https://api-kohler-us.kohler.io"
+# ---------------------------------------------------------------------------
+# App-global defaults (baked into the Kohler Konnect mobile app; not secret).
+# These match the values the official client uses, so the user does not have
+# to supply them. Exposed as advanced fields in the config flow in case Kohler
+# rotates them.
+# ---------------------------------------------------------------------------
+DEFAULT_CLIENT_ID = "8caf9530-1d13-48e6-867c-0f082878debc"
+# API resource for the OAuth scope. The library normalizes this into
+# "https://konnectkohler.onmicrosoft.com/<guid>/apiaccess". The GUID form is
+# the only one Kohler's tenant currently honors (the older "api-mob/access"
+# path form fails with AADB2C90205).
+DEFAULT_API_RESOURCE = "f5d87f3d-bdeb-4933-ab70-ef56cc343744"
 
-# Device SKU
-SKU_GCS = "GCS"  # Anthem shower (Grad Control System)
+# Device SKU for the Anthem shower (Graphic Control System).
+SKU_GCS = "GCS"
