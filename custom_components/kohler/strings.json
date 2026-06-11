@@ -3,28 +3,32 @@
     "step": {
       "user": {
         "title": "Kohler Konnect",
-        "description": "Enter your Kohler Konnect account credentials. The APIM subscription key and B2C refresh token are required for shower control. See the documentation for how to capture them.",
+        "description": "Enter your Kohler Konnect account credentials. The APIM subscription key is pre-filled with the app's default; leave it unless Kohler support tells you otherwise.",
         "data": {
           "username": "Email address",
           "password": "Password",
-          "apim_subscription_key": "APIM subscription key",
-          "b2c_refresh_token": "B2C refresh token",
-          "client_id": "Client ID (advanced)",
-          "api_resource": "API resource (advanced)"
+          "apim_subscription_key": "APIM subscription key"
+        }
+      },
+      "signin": {
+        "title": "Sign in to Kohler",
+        "description": "Open this link in your browser and sign in with your Kohler account:\n\n{signin_url}\n\nAfter signing in, your browser will try to open a page starting with `msauth://` and show an error like \u201csite can\u2019t be reached.\u201d That\u2019s expected. Copy the full address from the address bar and paste it below.",
+        "data": {
+          "redirect_url": "Pasted redirect URL (msauth://...)"
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate Kohler Konnect",
-        "description": "Your Kohler B2C refresh token has expired or was revoked. Capture a new one with `python -m kohler_anthem.b2c_signin` and paste it below.",
+        "description": "Your Kohler sign-in needs to be renewed. Open this link, sign in, and paste the resulting `msauth://...` address below:\n\n{signin_url}",
         "data": {
-          "b2c_refresh_token": "B2C refresh token"
+          "redirect_url": "Pasted redirect URL (msauth://...)"
         }
       }
     },
     "error": {
       "cannot_connect": "Unable to connect. Check your credentials and APIM key, then try again.",
       "invalid_auth": "Invalid username or password.",
-      "invalid_b2c_refresh_token": "The B2C refresh token was rejected. Capture a fresh one and try again.",
+      "signin_failed": "Sign-in could not be completed. Make sure you pasted the full msauth:// address, then try again.",
       "no_devices": "No devices found on this account."
     },
     "abort": {

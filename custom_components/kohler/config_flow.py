@@ -1,4 +1,14 @@
-"""Config flow for Kohler Konnect."""
+"""Config flow for Kohler Konnect.
+
+Two-step setup:
+  1. ``user``   — account email/password (+ pre-filled APIM key).
+  2. ``signin`` — the integration shows a Kohler sign-in URL; the user signs
+                  in, copies the ``msauth://...?code=...`` redirect URL, and
+                  pastes it back. The integration exchanges the code for a B2C
+                  refresh token server-side and validates everything.
+
+Reauth (when the stored refresh token is revoked) reuses the ``signin`` step.
+"""
 
 from __future__ import annotations
 
@@ -13,45 +23,33 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from kohler_anthem import KohlerAnthemClient, KohlerConfig
 from kohler_anthem.exceptions import AuthenticationError, KohlerAnthemError
 
+from . import decode_tenant_id
 from .const import (
     CONF_API_RESOURCE,
     CONF_APIM_KEY,
     CONF_B2C_REFRESH_TOKEN,
     CONF_CLIENT_ID,
+    CONF_TEMPERATURE_UNIT,
     CONF_TENANT_ID,
     DEFAULT_API_RESOURCE,
+    DEFAULT_APIM_KEY,
     DEFAULT_CLIENT_ID,
     DOMAIN,
 )
+from .oauth import OAuthError, PendingSignIn, build_sign_in, exchange_code, parse_redirect
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
-        vol.Required(CONF_APIM_KEY): str,
-        vol.Required(CONF_B2C_REFRESH_TOKEN): str,
-        # Advanced — defaulted to the app-global values. Only change these if
-        # Kohler rotates the mobile app's client_id / API resource GUID.
-        vol.Optional(CONF_CLIENT_ID, default=DEFAULT_CLIENT_ID): str,
-        vol.Optional(CONF_API_RESOURCE, default=DEFAULT_API_RESOURCE): str,
+        # Pre-filled with the app-global key; overridable if Kohler rotates it.
+        vol.Required(CONF_APIM_KEY, default=DEFAULT_APIM_KEY): str,
     }
 )
 
-STEP_REAUTH_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_B2C_REFRESH_TOKEN): str,
-    }
-)
-
-
-def _decode_tenant_id(access_token: str | None) -> str | None:
-    """Decode the ``oid`` claim from a B2C access token."""
-    # Local import keeps the module import-light and avoids a circular import.
-    from . import decode_tenant_id
-
-    return decode_tenant_id(access_token)
+STEP_SIGNIN_SCHEMA = vol.Schema({vol.Required("redirect_url"): str})
 
 
 class KohlerKonnectConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -60,137 +58,148 @@ class KohlerKonnectConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
+        self._creds: dict[str, Any] = {}
+        self._pending: PendingSignIn | None = None
         self._reauth_entry: ConfigEntry | None = None
 
+    # ------------------------------------------------------------------ #
+    # Step 1: credentials
+    # ------------------------------------------------------------------ #
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle the initial setup step."""
+        if user_input is not None:
+            self._creds = {
+                CONF_USERNAME: user_input[CONF_USERNAME],
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+                CONF_APIM_KEY: user_input[CONF_APIM_KEY],
+                CONF_CLIENT_ID: DEFAULT_CLIENT_ID,
+                CONF_API_RESOURCE: DEFAULT_API_RESOURCE,
+            }
+            return await self.async_step_signin()
+
+        return self.async_show_form(step_id="user", data_schema=STEP_USER_SCHEMA)
+
+    # ------------------------------------------------------------------ #
+    # Step 2: browser sign-in + paste-back
+    # ------------------------------------------------------------------ #
+    async def async_step_signin(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
 
-        if user_input is not None:
-            config = KohlerConfig(
-                username=user_input[CONF_USERNAME],
-                password=user_input[CONF_PASSWORD],
-                client_id=user_input[CONF_CLIENT_ID],
-                apim_subscription_key=user_input[CONF_APIM_KEY],
-                api_resource=user_input[CONF_API_RESOURCE],
-                b2c_refresh_token=user_input[CONF_B2C_REFRESH_TOKEN],
-            )
+        # First entry into this step: mint a fresh authorize URL to show.
+        if self._pending is None:
+            self._pending = build_sign_in()
 
-            tenant_id, error = await self._async_validate(config)
-            if error:
-                errors["base"] = error
-            elif not tenant_id:
-                errors["base"] = "cannot_connect"
-            else:
-                await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
-                self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=f"Kohler Konnect ({user_input[CONF_USERNAME]})",
-                    data={**user_input, CONF_TENANT_ID: tenant_id},
+        if user_input is not None:
+            try:
+                code = parse_redirect(user_input["redirect_url"], self._pending.state)
+                refresh_token = await exchange_code(
+                    aiohttp_session(self), code, self._pending.code_verifier
                 )
+            except OAuthError as err:
+                _LOGGER.error("B2C sign-in failed: %s", err)
+                errors["base"] = "signin_failed"
+            else:
+                return await self._finish(refresh_token, errors)
 
         return self.async_show_form(
-            step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            step_id="signin",
+            data_schema=STEP_SIGNIN_SCHEMA,
             errors=errors,
+            description_placeholders={"signin_url": self._pending.authorize_url},
         )
 
+    # ------------------------------------------------------------------ #
+    # Reauth: just redo the sign-in step against the existing entry
+    # ------------------------------------------------------------------ #
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
-        """Triggered when the stored B2C refresh token is revoked/expired."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
         )
-        return await self.async_step_reauth_confirm()
+        assert self._reauth_entry is not None
+        self._creds = dict(self._reauth_entry.data)
+        return await self.async_step_signin()
 
-    async def async_step_reauth_confirm(
-        self, user_input: dict[str, Any] | None = None
+    # ------------------------------------------------------------------ #
+    # Validate the freshly seeded token + finalize entry
+    # ------------------------------------------------------------------ #
+    async def _finish(
+        self, refresh_token: str, errors: dict[str, str]
     ) -> ConfigFlowResult:
-        """Re-prompt for just a freshly seeded B2C refresh token."""
-        errors: dict[str, str] = {}
-        entry = self._reauth_entry
-        assert entry is not None
-
-        if user_input is not None:
-            new_token = user_input[CONF_B2C_REFRESH_TOKEN]
-            config = KohlerConfig(
-                username=entry.data[CONF_USERNAME],
-                password=entry.data[CONF_PASSWORD],
-                client_id=entry.data.get(CONF_CLIENT_ID, DEFAULT_CLIENT_ID),
-                apim_subscription_key=entry.data[CONF_APIM_KEY],
-                api_resource=entry.data.get(CONF_API_RESOURCE, DEFAULT_API_RESOURCE),
-                b2c_refresh_token=new_token,
-            )
-            tenant_id, error = await self._async_validate(config)
-            if error:
-                errors["base"] = error
-            else:
-                rotated = new_token
-                # Capture the rotated token if validation refreshed it.
-                client = KohlerAnthemClient(config)
-                try:
-                    await client.connect()
-                    await client._b2c_auth.refresh(client._session)
-                    rotated = client.b2c_refresh_token or new_token
-                except KohlerAnthemError:
-                    pass
-                finally:
-                    await client.close()
-
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    data={
-                        **entry.data,
-                        CONF_B2C_REFRESH_TOKEN: rotated,
-                        **({CONF_TENANT_ID: tenant_id} if tenant_id else {}),
-                    },
-                )
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
-
-        return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=STEP_REAUTH_DATA_SCHEMA,
-            errors=errors,
+        config = KohlerConfig(
+            username=self._creds[CONF_USERNAME],
+            password=self._creds[CONF_PASSWORD],
+            client_id=self._creds.get(CONF_CLIENT_ID, DEFAULT_CLIENT_ID),
+            apim_subscription_key=self._creds[CONF_APIM_KEY],
+            api_resource=self._creds.get(CONF_API_RESOURCE, DEFAULT_API_RESOURCE),
+            b2c_refresh_token=refresh_token,
         )
 
-    async def _async_validate(
-        self, config: KohlerConfig
-    ) -> tuple[str | None, str | None]:
-        """Validate credentials + B2C refresh token.
-
-        Returns ``(tenant_id, error_key)``. ``error_key`` is ``None`` on
-        success. ``tenant_id`` is the decoded customer id used for API calls.
-        """
         client = KohlerAnthemClient(config)
         try:
             await client.connect()
-            tenant_id = _decode_tenant_id(
+            tenant_id = decode_tenant_id(
                 client._auth.token.access_token if client._auth.token else None
             )
             if not tenant_id:
-                return None, "cannot_connect"
+                errors["base"] = "cannot_connect"
+                return self._reshow_signin(errors)
 
-            # Confirm the account has devices and the ROPC read path works.
-            await client.get_customer(tenant_id)
+            customer = await client.get_customer(tenant_id)
+            temperature_unit = getattr(customer, "temperature_unit", "Fahrenheit")
 
-            # Validate the B2C refresh token by forcing a silent refresh; a bad
-            # token raises AuthenticationError here rather than at first write.
-            try:
-                await client._b2c_auth.refresh(client._session)
-            except AuthenticationError as err:
-                _LOGGER.error("B2C refresh token rejected: %s", err)
-                return None, "invalid_b2c_refresh_token"
-
-            return tenant_id, None
+            # Capture the rotated refresh token (the connect above may rotate it).
+            rotated = client.b2c_refresh_token or refresh_token
         except AuthenticationError as err:
-            _LOGGER.error("Authentication failed: %s", err)
-            return None, "invalid_auth"
+            _LOGGER.error("Auth failed after sign-in: %s", err)
+            errors["base"] = "invalid_auth"
+            return self._reshow_signin(errors)
         except KohlerAnthemError as err:
-            _LOGGER.error("Cannot connect to Kohler API: %s", err)
-            return None, "cannot_connect"
+            _LOGGER.error("Cannot connect after sign-in: %s", err)
+            errors["base"] = "cannot_connect"
+            return self._reshow_signin(errors)
         finally:
             await client.close()
+
+        data = {
+            **self._creds,
+            CONF_B2C_REFRESH_TOKEN: rotated,
+            CONF_TENANT_ID: tenant_id,
+            CONF_TEMPERATURE_UNIT: temperature_unit,
+        }
+
+        # Reauth path: update the existing entry in place.
+        if self._reauth_entry is not None:
+            self.hass.config_entries.async_update_entry(
+                self._reauth_entry, data={**self._reauth_entry.data, **data}
+            )
+            await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
+            return self.async_abort(reason="reauth_successful")
+
+        await self.async_set_unique_id(self._creds[CONF_USERNAME].lower())
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=f"Kohler Konnect ({self._creds[CONF_USERNAME]})",
+            data=data,
+        )
+
+    def _reshow_signin(self, errors: dict[str, str]) -> ConfigFlowResult:
+        """Re-render the sign-in step with a fresh URL after a failure."""
+        self._pending = build_sign_in()
+        return self.async_show_form(
+            step_id="signin",
+            data_schema=STEP_SIGNIN_SCHEMA,
+            errors=errors,
+            description_placeholders={"signin_url": self._pending.authorize_url},
+        )
+
+
+def aiohttp_session(flow: ConfigFlow):
+    """Return HA's shared aiohttp session (lazy import to keep module light)."""
+    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+    return async_get_clientsession(flow.hass)

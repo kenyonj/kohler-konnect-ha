@@ -35,6 +35,7 @@ from .const import (
     CONF_APIM_KEY,
     CONF_B2C_REFRESH_TOKEN,
     CONF_CLIENT_ID,
+    CONF_TEMPERATURE_UNIT,
     CONF_TENANT_ID,
     DEFAULT_API_RESOURCE,
     DEFAULT_CLIENT_ID,
@@ -88,6 +89,7 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         client: KohlerAnthemClient,
         tenant_id: str,
         devices: list[Device],
+        temperature_unit: str = "Fahrenheit",
     ) -> None:
         super().__init__(
             hass,
@@ -99,6 +101,11 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self.client = client
         self.tenant_id = tenant_id
         self.devices = devices
+        # The Kohler account's temperature unit ("Celsius"/"Fahrenheit"). The
+        # API returns and accepts setpoints in this unit on reads, so entities
+        # present temperatures in it and convert to Celsius only at the
+        # library's write boundary.
+        self.temperature_unit = temperature_unit
 
     def _persist_rotated_token(self) -> None:
         """Persist the B2C refresh token if the library rotated it.
@@ -137,11 +144,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Kohler Konnect from a config entry."""
     if not entry.data.get(CONF_B2C_REFRESH_TOKEN):
         # Pre-0.3.0 entries (username/password only) can't write to the device
-        # under Kohler's current backend. Force reauth to seed a refresh token.
+        # under Kohler's current backend. Force reauth, which walks the user
+        # through the in-app Kohler sign-in to seed a refresh token.
         raise ConfigEntryAuthFailed(
-            "Kohler now requires a B2C refresh token for shower control. "
-            "Seed one with `python -m kohler_anthem.b2c_signin` and paste it "
-            "into the reauth prompt."
+            "Kohler now requires sign-in for shower control. Use the "
+            "integration's reauth prompt to sign in."
         )
 
     config = build_config(entry)
@@ -181,7 +188,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not devices:
         _LOGGER.warning("No Anthem (GCS) devices found for this account")
 
-    coordinator = KohlerKonnectCoordinator(hass, entry, client, tenant_id, devices)
+    # The account's temperature unit governs how the API reports/accepts
+    # setpoints. Prefer the value captured at config time; fall back to the
+    # live customer record.
+    temperature_unit = entry.data.get(CONF_TEMPERATURE_UNIT) or getattr(
+        customer, "temperature_unit", "Fahrenheit"
+    )
+
+    coordinator = KohlerKonnectCoordinator(
+        hass, entry, client, tenant_id, devices, temperature_unit
+    )
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator

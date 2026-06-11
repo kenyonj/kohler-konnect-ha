@@ -80,12 +80,18 @@ class KohlerConnectionSensor(KohlerBaseSensor):
 
 
 class KohlerTargetTemperatureSensor(KohlerBaseSensor):
-    """Reports the primary valve's target temperature."""
+    """Reports the primary valve's target temperature in the account's unit."""
 
     _attr_name = "Target Temperature"
-    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_icon = "mdi:thermometer-water"
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        # The API returns the setpoint in the account's unit; label it to match.
+        if self.coordinator.temperature_unit == "Fahrenheit":
+            return UnitOfTemperature.FAHRENHEIT
+        return UnitOfTemperature.CELSIUS
 
     @property
     def unique_id(self) -> str:
