@@ -47,6 +47,43 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.WATER_HEATER]
 
+# Kohler's backend returns this when the physical device is powered off or has
+# lost its network/cloud link. It is an expected, transient condition — not an
+# error in the integration — so we surface it gently rather than as a traceback.
+KOHLER_OFFLINE_STATUS = 900
+
+
+def is_offline_error(err: KohlerAnthemError) -> bool:
+    """True if an API error means the device is offline (vs a real failure)."""
+    raw = getattr(err, "raw_response", None)
+    if isinstance(raw, dict) and raw.get("statusCode") == KOHLER_OFFLINE_STATUS:
+        return True
+    # Fallback: some responses only carry the message text.
+    text = str(raw) if raw is not None else str(err)
+    return "product is offline" in text.lower()
+
+
+async def run_device_command(coro: "Any", action: str) -> None:
+    """Await a Kohler command coroutine, translating failures for the UI.
+
+    Raises HomeAssistantError with a clean message so HA shows a tidy notice
+    instead of a traceback. Device-offline is logged at INFO (expected); other
+    failures at ERROR.
+    """
+    from homeassistant.exceptions import HomeAssistantError
+
+    try:
+        await coro
+    except KohlerAnthemError as err:
+        if is_offline_error(err):
+            _LOGGER.info("Cannot %s: the shower is offline", action)
+            raise HomeAssistantError(
+                "The Kohler shower is offline. Check that it's powered on and "
+                "connected to Wi-Fi, then try again."
+            ) from err
+        _LOGGER.error("Failed to %s: %s", action, err)
+        raise HomeAssistantError(f"Kohler command failed: {err}") from err
+
 
 def decode_tenant_id(access_token: str | None) -> str | None:
     """Extract the tenant/customer id (the ``oid`` claim) from a B2C JWT.
@@ -122,21 +159,48 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
             )
 
     async def _async_update_data(self) -> dict[str, DeviceState]:
-        try:
-            states: dict[str, DeviceState] = {}
-            for device in self.devices:
+        # Start from the last-known states so a single device's transient read
+        # failure (e.g. it's briefly offline) doesn't blank out every entity by
+        # failing the whole coordinator update.
+        states: dict[str, DeviceState] = dict(self.data or {})
+        any_success = False
+        errors: list[str] = []
+
+        for device in self.devices:
+            try:
                 states[device.device_id] = await self.client.get_device_state(
                     device.device_id
                 )
-        except AuthenticationError as err:
-            raise ConfigEntryAuthFailed(
-                f"Authentication failed during update: {err}"
-            ) from err
-        except KohlerAnthemError as err:
-            raise UpdateFailed(f"Error communicating with Kohler API: {err}") from err
+                any_success = True
+            except AuthenticationError as err:
+                # Auth problems are not per-device — bail to reauth immediately.
+                raise ConfigEntryAuthFailed(
+                    f"Authentication failed during update: {err}"
+                ) from err
+            except KohlerAnthemError as err:
+                # Keep this device's previous state; log offline gently.
+                if is_offline_error(err):
+                    _LOGGER.debug(
+                        "Device %s is offline; keeping last-known state",
+                        device.device_id,
+                    )
+                else:
+                    errors.append(f"{device.device_id}: {err}")
+
+        # Only fail the whole update if we have no states at all AND nothing
+        # succeeded — otherwise entities stay available with last-known data.
+        if not states and not any_success:
+            raise UpdateFailed(
+                "Error communicating with Kohler API: " + "; ".join(errors)
+                if errors
+                else "No device state available"
+            )
+        if errors:
+            _LOGGER.warning("Kohler update had errors: %s", "; ".join(errors))
 
         # A successful read may have rotated the B2C refresh token.
-        self._persist_rotated_token()
+        if any_success:
+            self._persist_rotated_token()
         return states
 
 
