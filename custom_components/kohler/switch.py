@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -11,13 +10,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from kohler_anthem.exceptions import KohlerAnthemError
 from kohler_anthem.models import Device
 
-from . import KohlerKonnectCoordinator
+from . import KohlerKonnectCoordinator, run_device_command
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -66,21 +62,19 @@ class KohlerWarmupSwitch(CoordinatorEntity[KohlerKonnectCoordinator], SwitchEnti
         return bool(state and state.is_warming_up)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        try:
-            await self.coordinator.client.start_warmup(
+        await run_device_command(
+            self.coordinator.client.start_warmup(
                 self.coordinator.tenant_id, self._device_id
-            )
-        except KohlerAnthemError as err:
-            _LOGGER.error("Failed to start warmup: %s", err)
-            return
+            ),
+            "start warmup",
+        )
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        try:
-            await self.coordinator.client.stop_warmup(
+        await run_device_command(
+            self.coordinator.client.stop_warmup(
                 self.coordinator.tenant_id, self._device_id
-            )
-        except KohlerAnthemError as err:
-            _LOGGER.error("Failed to stop warmup: %s", err)
-            return
+            ),
+            "stop warmup",
+        )
         await self.coordinator.async_request_refresh()

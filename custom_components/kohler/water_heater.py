@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 
 from homeassistant.components.water_heater import (
@@ -17,13 +16,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from kohler_anthem import Outlet
-from kohler_anthem.exceptions import KohlerAnthemError
 from kohler_anthem.models import Device, DeviceState
 
-from . import KohlerKonnectCoordinator
+from . import KohlerKonnectCoordinator, run_device_command
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
 
 OPERATION_OFF = "off"
 OPERATION_WARMUP = "warmup"
@@ -168,17 +164,22 @@ class KohlerAnthemShower(
         return _to_celsius(target, self.coordinator.temperature_unit)
 
     async def _run_command_and_refresh(self, operation: str, coro: Any) -> None:
-        """Send a command, optimistically update, then re-poll twice."""
+        """Send a command, optimistically update, then re-poll twice.
+
+        On failure (including device-offline), clear the optimistic state and
+        let run_device_command raise a clean HomeAssistantError for the UI.
+        """
         self._optimistic_operation = operation
         self.async_write_ha_state()
 
         try:
-            await coro
-        except KohlerAnthemError as err:
-            _LOGGER.error("Kohler command failed: %s", err)
+            await run_device_command(coro, operation)
+        except Exception:
+            # Revert optimistic state so the UI reflects reality, then re-raise
+            # so HA surfaces the (already user-friendly) message.
             self._optimistic_operation = None
             self.async_write_ha_state()
-            return
+            raise
 
         await self.coordinator.async_request_refresh()
         await asyncio.sleep(5)
