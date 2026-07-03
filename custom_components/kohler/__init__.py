@@ -17,6 +17,7 @@ import base64
 import binascii
 import json
 import logging
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -28,7 +29,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from kohler_anthem import KohlerAnthemClient, KohlerConfig
 from kohler_anthem.exceptions import AuthenticationError, KohlerAnthemError
-from kohler_anthem.models import Device, DeviceState
+from kohler_anthem.models import Device, DeviceState, Outlet, PresetResponse
 
 from .const import (
     CONF_API_RESOURCE,
@@ -40,12 +41,20 @@ from .const import (
     DEFAULT_API_RESOURCE,
     DEFAULT_CLIENT_ID,
     DOMAIN,
+    PRESET_REFRESH_CYCLES,
     SCAN_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.WATER_HEATER]
+PLATFORMS = [
+    Platform.BINARY_SENSOR,
+    Platform.NUMBER,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.WATER_HEATER,
+]
 
 # Kohler's backend returns this when the physical device is powered off or has
 # lost its network/cloud link. It is an expected, transient condition — not an
@@ -116,6 +125,19 @@ def build_config(entry: ConfigEntry) -> KohlerConfig:
     )
 
 
+@dataclass
+class DeviceRuntime:
+    """Per-device settings shared across entity platforms.
+
+    The Kohler API has no "set flow/outlet without running water" command, so
+    the number/select entities store the user's choice here and the
+    water_heater applies it when starting (or live-updates a running shower).
+    """
+
+    flow_percent: int = 100
+    outlet: Outlet = Outlet.SHOWERHEAD
+
+
 class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
     """Polls device state for every Anthem device on the account."""
 
@@ -127,6 +149,7 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         tenant_id: str,
         devices: list[Device],
         temperature_unit: str = "Fahrenheit",
+        water_units: str = "Standard",
     ) -> None:
         super().__init__(
             hass,
@@ -138,11 +161,78 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self.client = client
         self.tenant_id = tenant_id
         self.devices = devices
+        # The account's water volume unit ("Gallons"/"Liters"/"Standard").
+        self.water_units = water_units
         # The Kohler account's temperature unit ("Celsius"/"Fahrenheit"). The
         # API returns and accepts setpoints in this unit on reads, so entities
         # present temperatures in it and convert to Celsius only at the
         # library's write boundary.
         self.temperature_unit = temperature_unit
+        # Presets/experiences per device. They change rarely (only when the
+        # user edits them in the Kohler app), so they're refreshed every
+        # PRESET_REFRESH_CYCLES state polls instead of every poll.
+        self.presets: dict[str, PresetResponse] = {}
+        self._preset_poll_countdown = 0
+        self.runtime: dict[str, DeviceRuntime] = {
+            device.device_id: DeviceRuntime() for device in devices
+        }
+
+    def device_is_running(self, device_id: str) -> bool:
+        """True if any valve on the device is actively flowing water."""
+        state = (self.data or {}).get(device_id)
+        if state is None:
+            return False
+        return any(
+            valve.is_active or valve.at_flow for valve in state.state.valve_state
+        )
+
+    def current_setpoint_celsius(self, device_id: str) -> float:
+        """The primary valve's temperature setpoint, converted to Celsius."""
+        state = (self.data or {}).get(device_id)
+        if state is not None:
+            for valve in state.state.valve_state:
+                if valve.valve_index == "Valve1" and valve.temperature_setpoint:
+                    setpoint = valve.temperature_setpoint
+                    if self.temperature_unit == "Fahrenheit":
+                        return (setpoint - 32.0) * 5.0 / 9.0
+                    return setpoint
+        return 38.0
+
+    async def async_apply_runtime(self, device_id: str, action: str) -> None:
+        """Re-send the running command with the current runtime flow/outlet.
+
+        Used by the flow number and outlet select entities so changes take
+        effect immediately while the shower is running. No-op when the water
+        is off (the setting is simply applied on the next start).
+        """
+        if not self.device_is_running(device_id):
+            return
+        runtime = self.runtime[device_id]
+        await run_device_command(
+            self.client.turn_on_outlet(
+                self.tenant_id,
+                device_id,
+                runtime.outlet,
+                temperature_celsius=self.current_setpoint_celsius(device_id),
+                flow_percent=runtime.flow_percent,
+            ),
+            action,
+        )
+        await self.async_request_refresh()
+
+    async def _async_refresh_presets(self) -> None:
+        """Fetch presets for every device; failures keep the previous cache."""
+        for device in self.devices:
+            try:
+                self.presets[device.device_id] = await self.client.get_presets(
+                    device.device_id
+                )
+            except AuthenticationError:
+                raise
+            except KohlerAnthemError as err:
+                _LOGGER.debug(
+                    "Could not refresh presets for %s: %s", device.device_id, err
+                )
 
     def _persist_rotated_token(self) -> None:
         """Persist the B2C refresh token if the library rotated it.
@@ -165,6 +255,16 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         states: dict[str, DeviceState] = dict(self.data or {})
         any_success = False
         errors: list[str] = []
+
+        if self._preset_poll_countdown <= 0:
+            try:
+                await self._async_refresh_presets()
+            except AuthenticationError as err:
+                raise ConfigEntryAuthFailed(
+                    f"Authentication failed during update: {err}"
+                ) from err
+            self._preset_poll_countdown = PRESET_REFRESH_CYCLES
+        self._preset_poll_countdown -= 1
 
         for device in self.devices:
             try:
@@ -258,9 +358,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     temperature_unit = entry.data.get(CONF_TEMPERATURE_UNIT) or getattr(
         customer, "temperature_unit", "Fahrenheit"
     )
+    water_units = getattr(customer, "water_units", "Standard")
 
     coordinator = KohlerKonnectCoordinator(
-        hass, entry, client, tenant_id, devices, temperature_unit
+        hass, entry, client, tenant_id, devices, temperature_unit, water_units
     )
     await coordinator.async_config_entry_first_refresh()
 

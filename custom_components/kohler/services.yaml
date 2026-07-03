@@ -1,0 +1,49 @@
+start_preset:
+  name: Start preset
+  description: >-
+    Start a saved Kohler preset or experience on the shower. Preset IDs are
+    1-5 for presets and 17+ for experiences, as configured in the Kohler
+    Konnect app.
+  target:
+    entity:
+      integration: kohler
+      domain: water_heater
+  fields:
+    preset_id:
+      name: Preset ID
+      description: The numeric ID of the preset or experience to start.
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 99
+          mode: box
+
+start_warmup:
+  name: Start warmup
+  description: >-
+    Pre-heat the shower to its target temperature. No water flows from the
+    outlets until the shower is started.
+  target:
+    entity:
+      integration: kohler
+      domain: water_heater
+
+stop_shower:
+  name: Stop shower
+  description: Immediately stop all water flow and clear any running preset or warmup.
+  target:
+    entity:
+      integration: kohler
+      domain: water_heater
+
+pause_shower:
+  name: Pause shower
+  description: >-
+    Pause the water flow while keeping the shower session (temperature and
+    outlet selection) active, so it can be resumed.
+  target:
+    entity:
+      integration: kohler
+      domain: water_heater
