@@ -7,6 +7,10 @@ DOMAIN = "kohler"
 # Polling interval for the DataUpdateCoordinator (seconds).
 SCAN_INTERVAL = 10
 
+# Presets/experiences change only when edited in the Kohler app, so refresh
+# them every N state polls (N * SCAN_INTERVAL seconds) rather than every poll.
+PRESET_REFRESH_CYCLES = 30
+
 # ---------------------------------------------------------------------------
 # Config-entry keys
 # ---------------------------------------------------------------------------
@@ -35,6 +39,14 @@ DEFAULT_APIM_KEY = "429ecb1d0b5e4258aa0a2bfadd82a493"
 
 # Device SKU for the Anthem shower (Graphic Control System).
 SKU_GCS = "GCS"
+
+# ---------------------------------------------------------------------------
+# Entity services (registered on the water_heater platform).
+# ---------------------------------------------------------------------------
+SERVICE_START_PRESET = "start_preset"
+SERVICE_START_WARMUP = "start_warmup"
+SERVICE_STOP_SHOWER = "stop_shower"
+SERVICE_PAUSE_SHOWER = "pause_shower"
 
 # ---------------------------------------------------------------------------
 # B2C sign-in (OAuth Authorization Code + PKCE) constants for the config flow.

@@ -14,13 +14,19 @@ An unofficial Home Assistant integration for **Kohler Konnect** devices, with fu
 | Feature | Status |
 |---|---|
 | 🚿 Shower warmup (pre-heat) | ✅ Working |
-| ▶️ Start preset / experience | ✅ Working |
+| ▶️ Start preset / experience (select entity + service) | ✅ Working |
 | ⏹️ Stop shower | ✅ Working |
-| 🌡️ Target temperature (get/set) | ✅ Working |
+| ⏸️ Pause shower (keeps session active) | ✅ Working |
+| 🌡️ Target temperature (get/set, live while running) | ✅ Working |
+| 💦 Flow percentage (set, live while running) | ✅ Working |
+| 🚰 Outlet selection (showerhead / handshower / tub) | ✅ Working |
 | 📶 Connection state sensor | ✅ Working |
 | 🔄 Warmup state sensor | ✅ Working |
-| 🎛️ Active preset sensor | ✅ Working |
+| 🎛️ Active preset sensor (by name) | ✅ Working |
 | 💧 Current outlet temperature | ✅ Working |
+| 🌊 Water running binary sensor | ✅ Working |
+| ⚠️ Valve problem binary sensor (error codes) | ✅ Working |
+| 📊 Session volume / system state sensors | ✅ Working |
 
 ---
 
@@ -56,24 +62,48 @@ An unofficial Home Assistant integration for **Kohler Konnect** devices, with fu
 
 ---
 
+## Entities
+
+Each Anthem shower gets:
+
+| Entity | Type | What it does |
+|---|---|---|
+| `water_heater.anthem_shower` | Water heater | Start/stop/pause the shower, warmup, target temperature |
+| `select.*_preset` | Select | Start a preset or experience by name; `none` stops it |
+| `select.*_outlet` | Select | Which outlet runs when starting (showerhead, handshower, tub filler, tub + handheld) |
+| `number.*_flow` | Number | Water flow percentage; applies live if water is running |
+| `switch.*_shower_warmup` | Switch | Start/stop warmup |
+| `binary_sensor.*_water_running` | Binary sensor | On while any valve is flowing |
+| `binary_sensor.*_valve_problem` | Binary sensor | On when a valve reports an error (codes in attributes) |
+| `sensor.*` | Sensors | Connection state, target temperature, warmup state, active preset, system state, session volume, last connected |
+
+The outlet and flow selections are held locally (the Kohler API has no "set
+without running water" command) and are applied when the shower starts — or
+immediately, if water is already running.
+
+---
+
 ## Services
 
 ### `kohler.start_warmup`
 Pre-heats the shower to your target temperature — no water flows until you get in.
 
 ### `kohler.start_preset`
-Starts a saved preset by ID.
+Starts a saved preset or experience by ID (1–5 are presets, 17+ are experiences).
 
 ```yaml
 service: kohler.start_preset
 target:
   entity_id: water_heater.anthem_shower
 data:
-  preset_id: "1"
+  preset_id: 1
 ```
 
 ### `kohler.stop_shower`
-Immediately stops all water flow.
+Immediately stops all water flow (and clears any running preset or warmup).
+
+### `kohler.pause_shower`
+Pauses the water while keeping the shower session active, so it can be resumed.
 
 ---
 
@@ -116,7 +146,7 @@ This integration uses the undocumented Kohler Konnect REST API:
 2. **User token** — Azure B2C ROPC flow with your email/password → JWT bearer token
 3. **API calls** — all device state and commands sent to `api-kohler-us.kohler.io` with both headers
 
-State is polled every 30 seconds. Commands are sent immediately.
+State is polled every 10 seconds (presets every ~5 minutes). Commands are sent immediately.
 
 ---
 
@@ -125,7 +155,6 @@ State is polled every 30 seconds. Commands are sent immediately.
 PRs welcome! Especially interested in:
 - Support for EVO / DTV+ / SFC devices
 - Azure IoT Hub real-time state updates (instead of polling)
-- Bath fill support
 - Multiple shower / valve support
 
 ---
