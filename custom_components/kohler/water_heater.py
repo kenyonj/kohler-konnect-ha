@@ -15,8 +15,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from kohler_anthem import Outlet
-from kohler_anthem.models import Device, DeviceState
+from kohler_anthem import Outlet, encode_valve_command
+from kohler_anthem.models import (
+    Device,
+    DeviceState,
+    ValveControlModel,
+    ValveMode,
+    ValvePrefix,
+)
 
 from . import KohlerKonnectCoordinator, run_device_command
 from .const import DOMAIN
@@ -35,6 +41,22 @@ SUPPORT_FLAGS = (
     WaterHeaterEntityFeature.TARGET_TEMPERATURE
     | WaterHeaterEntityFeature.OPERATION_MODE
 )
+
+# Maps the API's valveIndex names to the solowritesystem payload field and the
+# valve-prefix byte the firmware expects in each 4-byte command.
+VALVE_FIELD_AND_PREFIX = {
+    "Valve1": ("primary_valve1", ValvePrefix.PRIMARY),
+    "Valve2": ("secondary_valve1", ValvePrefix.SECONDARY_1),
+    "Valve3": ("secondary_valve2", ValvePrefix.SECONDARY_2),
+    "Valve4": ("secondary_valve3", ValvePrefix.SECONDARY_3),
+    "Valve5": ("secondary_valve4", ValvePrefix.SECONDARY_4),
+    "Valve6": ("secondary_valve5", ValvePrefix.SECONDARY_5),
+    "Valve7": ("secondary_valve6", ValvePrefix.SECONDARY_6),
+    "Valve8": ("secondary_valve7", ValvePrefix.SECONDARY_7),
+}
+
+# encode_valve_command's accepted Celsius range.
+ENCODE_TEMP_MIN_C, ENCODE_TEMP_MAX_C = 15.0, 49.0
 
 
 def _to_celsius(value: float, unit: str) -> float:
@@ -163,6 +185,63 @@ class KohlerAnthemShower(
         target = self.target_temperature or self._default_target
         return _to_celsius(target, self.coordinator.temperature_unit)
 
+    def _build_off_control(self) -> ValveControlModel:
+        """Build a solowritesystem payload that actually turns the water off.
+
+        The library's ``turn_off()`` sends an all-zero ``primaryValve1``
+        (``"00000000"``). The firmware ignores that command because its
+        prefix byte (0x00) doesn't address any valve — which is why users
+        could turn the shower on but never off. The mobile app instead sends
+        ``[prefix][temp][flow]`` with mode ``0x00`` per valve (e.g.
+        ``"0179c800"``); reproduce that here for every valve the device
+        reports.
+        """
+        temp_c = min(
+            max(self._target_celsius(), ENCODE_TEMP_MIN_C), ENCODE_TEMP_MAX_C
+        )
+        kwargs: dict[str, str] = {}
+        state = self._state
+        valves = state.state.valve_state if state is not None else []
+        for valve in valves:
+            mapping = VALVE_FIELD_AND_PREFIX.get(valve.valve_index)
+            if mapping is None:
+                continue
+            field, prefix = mapping
+            # Temp/flow bytes are ignored for OFF; they just need to be valid.
+            flow = min(max(valve.flow_setpoint, 0), 100) or 100
+            kwargs[field] = encode_valve_command(
+                temperature_celsius=temp_c,
+                flow_percent=flow,
+                mode=ValveMode.OFF,
+                prefix=prefix,
+            )
+        if "primary_valve1" not in kwargs:
+            kwargs["primary_valve1"] = encode_valve_command(
+                temperature_celsius=temp_c,
+                flow_percent=100,
+                mode=ValveMode.OFF,
+                prefix=ValvePrefix.PRIMARY,
+            )
+        return ValveControlModel(**kwargs)
+
+    async def _async_turn_off(self) -> None:
+        """Stop any session-level activity, then close the valves."""
+        client = self.coordinator.client
+        tenant_id = self.coordinator.tenant_id
+        state = self._state
+
+        # Warmup and presets are session-level state on the controller;
+        # clear them first so it doesn't keep the valves open. stop_warmup
+        # sends presetOrExperienceId "0", which stops both.
+        if state is not None and (
+            state.is_warming_up or state.state.active_preset_id is not None
+        ):
+            await client.stop_warmup(tenant_id, self._device_id)
+
+        await client.control_valve(
+            tenant_id, self._device_id, self._build_off_control()
+        )
+
     async def _run_command_and_refresh(self, operation: str, coro: Any) -> None:
         """Send a command, optimistically update, then re-poll twice.
 
@@ -213,7 +292,7 @@ class KohlerAnthemShower(
         if operation_mode == OPERATION_WARMUP:
             coro = client.start_warmup(tenant_id, self._device_id)
         elif operation_mode == OPERATION_OFF:
-            coro = client.turn_off(tenant_id, self._device_id)
+            coro = self._async_turn_off()
         elif operation_mode == OPERATION_RUNNING:
             coro = client.turn_on_outlet(
                 tenant_id,
