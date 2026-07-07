@@ -14,6 +14,8 @@ from homeassistant.const import UnitOfTemperature, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from kohler_anthem import gallons_to_liters
+
 from . import KohlerKonnectCoordinator
 from .const import DOMAIN
 from .entity import KohlerEntity
@@ -38,7 +40,7 @@ async def async_setup_entry(
             KohlerWarmupStateSensor(coordinator, device),
             KohlerActivePresetSensor(coordinator, device),
             KohlerSystemStateSensor(coordinator, device),
-            KohlerSessionVolumeSensor(coordinator, device),
+            KohlerTotalWaterSensor(coordinator, device),
             KohlerLastConnectedSensor(coordinator, device),
         ]
     async_add_entities(entities)
@@ -163,31 +165,44 @@ class KohlerSystemStateSensor(KohlerBaseSensor, SensorEntity):
         return state.state.current_system_state.value
 
 
-class KohlerSessionVolumeSensor(KohlerBaseSensor, SensorEntity):
-    """Water volume used in the current/last shower session."""
+class KohlerTotalWaterSensor(KohlerBaseSensor, SensorEntity):
+    """Lifetime water volume used by the device.
 
-    _attr_name = "Session Volume"
+    Reads the API's ``totalFlow`` field, documented upstream as the lifetime
+    flow in US gallons. (The earlier "Session Volume" sensor read
+    ``totalVolume`` — an undocumented, unknown-unit counter that read in the
+    hundreds of millions and was wrongly labelled gallons. Kohler exposes no
+    per-session volume; both counters are lifetime totals.) Presented in the
+    account's water unit and marked total_increasing so it feeds HA's
+    long-term statistics / water dashboard.
+    """
+
+    _attr_name = "Total Water Used"
     _attr_icon = "mdi:water"
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_device_class = SensorDeviceClass.WATER
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
     @property
     def native_unit_of_measurement(self) -> str:
-        # Kohler reports volume in the account's water unit ("Standard" = US
-        # customary, i.e. gallons).
+        # totalFlow is reported in US gallons; convert to litres for metric
+        # ("Liters") accounts.
         if self.coordinator.water_units == "Liters":
             return UnitOfVolume.LITERS
         return UnitOfVolume.GALLONS
 
     @property
     def unique_id(self) -> str:
-        return f"{self._device_id}_session_volume"
+        return f"{self._device_id}_total_water"
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> float | None:
         state = self._state
         if state is None:
             return None
-        return state.state.total_volume
+        gallons = state.state.total_flow
+        if self.coordinator.water_units == "Liters":
+            return round(gallons_to_liters(gallons), 1)
+        return round(gallons, 1)
 
 
 class KohlerLastConnectedSensor(KohlerBaseSensor, SensorEntity):
