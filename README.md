@@ -26,7 +26,7 @@ An unofficial Home Assistant integration for **Kohler Konnect** devices, with fu
 | 💧 Current outlet temperature | ✅ Working |
 | 🌊 Water running binary sensor | ✅ Working |
 | ⚠️ Valve problem binary sensor (error codes) | ✅ Working |
-| 📊 Session volume / system state sensors | ✅ Working |
+| 📊 Total water used / system state sensors | ✅ Working |
 
 ---
 
@@ -75,7 +75,7 @@ Each Anthem shower gets:
 | `switch.*_shower_warmup` | Switch | Start/stop warmup |
 | `binary_sensor.*_water_running` | Binary sensor | On while any valve is flowing |
 | `binary_sensor.*_valve_problem` | Binary sensor | On when a valve reports an error (codes in attributes) |
-| `sensor.*` | Sensors | Connection state, target temperature, warmup state, active preset, system state, session volume, last connected |
+| `sensor.*` | Sensors | Connection state, target temperature, warmup state, active preset, system state, total water used, last connected |
 
 The outlet and flow selections are held locally (the Kohler API has no "set
 without running water" command) and are applied when the shower starts — or
