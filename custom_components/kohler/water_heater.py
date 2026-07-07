@@ -29,7 +29,7 @@ from .const import (
     SERVICE_STOP_SHOWER,
 )
 from .entity import KohlerEntity
-from .helpers import build_off_control, clamp_encode_temp, to_celsius
+from .helpers import build_off_control, clamp_encode_temp, from_celsius, to_celsius
 
 OPERATION_OFF = "off"
 OPERATION_WARMUP = "warmup"
@@ -157,7 +157,14 @@ class KohlerAnthemShower(KohlerEntity, WaterHeaterEntity):
             if valve.valve_index == "Valve1":
                 for outlet in valve.outlets:
                     if outlet.outlet_index == "outlet2":
-                        return outlet.outlet_temp or None
+                        temp_c = outlet.outlet_temp
+                        if not temp_c:
+                            return None
+                        # The API reports temperatures in Celsius; present in
+                        # the account's unit to match _attr_temperature_unit.
+                        return round(
+                            from_celsius(temp_c, self.coordinator.temperature_unit), 1
+                        )
         return None
 
     @property
@@ -168,7 +175,14 @@ class KohlerAnthemShower(KohlerEntity, WaterHeaterEntity):
         if state is not None:
             for valve in state.state.valve_state:
                 if valve.valve_index == "Valve1" and valve.temperature_setpoint:
-                    return valve.temperature_setpoint
+                    # API setpoint is Celsius; present in the account's unit.
+                    return round(
+                        from_celsius(
+                            valve.temperature_setpoint,
+                            self.coordinator.temperature_unit,
+                        ),
+                        1,
+                    )
         return self._default_target
 
     # -- commands ---------------------------------------------------------- #

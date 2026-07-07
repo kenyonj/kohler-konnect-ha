@@ -187,15 +187,17 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         )
 
     def current_setpoint_celsius(self, device_id: str) -> float:
-        """The primary valve's temperature setpoint, converted to Celsius."""
+        """The primary valve's temperature setpoint, in Celsius.
+
+        The Kohler API already reports the setpoint in Celsius, so it can be
+        passed straight to the library's Celsius write methods with no
+        conversion.
+        """
         state = (self.data or {}).get(device_id)
         if state is not None:
             for valve in state.state.valve_state:
                 if valve.valve_index == "Valve1" and valve.temperature_setpoint:
-                    setpoint = valve.temperature_setpoint
-                    if self.temperature_unit == "Fahrenheit":
-                        return (setpoint - 32.0) * 5.0 / 9.0
-                    return setpoint
+                    return valve.temperature_setpoint
         return 38.0
 
     async def async_apply_runtime(self, device_id: str, action: str) -> None:
