@@ -43,6 +43,7 @@ from .const import (
     DOMAIN,
     PRESET_REFRESH_CYCLES,
     SCAN_INTERVAL,
+    WARMUP_DISABLED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -193,6 +194,23 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         return any(
             valve.is_active or valve.at_flow for valve in state.state.valve_state
         )
+
+    def is_warmup_enabled(self, device_id: str) -> bool | None:
+        """Whether the warmup feature is enabled on the fixture itself.
+
+        The device-state ``warmUpState.warmUp`` flag is ``warmUpEnabled`` /
+        ``warmUpDisabled`` and is independent of whether warmup is currently
+        running. When it's disabled, Kohler's cloud accepts the warmup command
+        (HTTP 200) but the device ignores it, so the command silently no-ops.
+        Callers use this to block the command with a clear message and to
+        expose the state as a diagnostic sensor.
+
+        Returns ``None`` when no state has been read yet (unknown).
+        """
+        state = (self.data or {}).get(device_id)
+        if state is None:
+            return None
+        return state.state.warm_up_state.warm_up != WARMUP_DISABLED
 
     def current_setpoint_celsius(self, device_id: str) -> float:
         """The primary valve's temperature setpoint, in Celsius.
