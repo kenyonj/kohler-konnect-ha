@@ -17,6 +17,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import KohlerKonnectCoordinator
 from .const import DOMAIN
 from .entity import KohlerEntity
+from .helpers import from_celsius
 
 KohlerBaseSensor = KohlerEntity  # retained name; all sensors share the base
 
@@ -86,7 +87,14 @@ class KohlerTargetTemperatureSensor(KohlerBaseSensor, SensorEntity):
             return None
         for valve in state.state.valve_state:
             if valve.valve_index == "Valve1":
-                return valve.temperature_setpoint or None
+                setpoint = valve.temperature_setpoint
+                if not setpoint:
+                    return None
+                # The API reports the setpoint in Celsius; present it in the
+                # account's unit to match native_unit_of_measurement.
+                return round(
+                    from_celsius(setpoint, self.coordinator.temperature_unit), 1
+                )
         return None
 
 

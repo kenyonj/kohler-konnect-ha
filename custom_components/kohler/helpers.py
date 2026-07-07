@@ -34,6 +34,19 @@ def to_celsius(value: float, unit: str) -> float:
     return value
 
 
+def from_celsius(value_c: float, unit: str) -> float:
+    """Convert a Celsius API value to the account's display unit.
+
+    Kohler's REST API reports temperatures in Celsius regardless of the
+    account's display preference (the mobile app converts locally). Entities
+    present temperatures in the account's unit, so read paths convert from
+    Celsius with this helper; writes convert back with :func:`to_celsius`.
+    """
+    if unit == "Fahrenheit":
+        return value_c * 9.0 / 5.0 + 32.0
+    return value_c
+
+
 def clamp_encode_temp(temp_c: float) -> float:
     """Clamp a Celsius value into encode_valve_command's accepted range."""
     return min(max(temp_c, ENCODE_TEMP_MIN_C), ENCODE_TEMP_MAX_C)
