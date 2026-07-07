@@ -149,7 +149,6 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         tenant_id: str,
         devices: list[Device],
         temperature_unit: str = "Fahrenheit",
-        water_units: str = "Standard",
     ) -> None:
         super().__init__(
             hass,
@@ -161,8 +160,14 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self.client = client
         self.tenant_id = tenant_id
         self.devices = devices
-        # The account's water volume unit ("Gallons"/"Liters"/"Standard").
-        self.water_units = water_units
+        # Snapshot of the reload-relevant config: everything EXCEPT the rotating
+        # B2C refresh token. The update listener diffs against this so that a
+        # bare token rotation (persisted on every poll after a write) does NOT
+        # reload the entry — reloading flaps every entity to `unavailable` for
+        # the reload window.
+        self.loaded_config = {
+            k: v for k, v in entry.data.items() if k != CONF_B2C_REFRESH_TOKEN
+        }
         # The Kohler account's temperature unit ("Celsius"/"Fahrenheit"). The
         # API returns and accepts setpoints in this unit on reads, so entities
         # present temperatures in it and convert to Celsius only at the
@@ -360,10 +365,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     temperature_unit = entry.data.get(CONF_TEMPERATURE_UNIT) or getattr(
         customer, "temperature_unit", "Fahrenheit"
     )
-    water_units = getattr(customer, "water_units", "Standard")
 
     coordinator = KohlerKonnectCoordinator(
-        hass, entry, client, tenant_id, devices, temperature_unit, water_units
+        hass, entry, client, tenant_id, devices, temperature_unit
     )
     await coordinator.async_config_entry_first_refresh()
 
@@ -375,7 +379,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the entry when its options/data change (e.g. after reauth)."""
+    """Reload the entry when its *reload-relevant* config changes.
+
+    The coordinator persists the B2C refresh token on every poll after a write
+    (B2C rotates it on each silent refresh). That persistence goes through
+    ``async_update_entry``, which fires this listener — but a bare token
+    rotation must NOT reload the entry: a reload tears down and rebuilds every
+    platform, flapping all entities to ``unavailable`` for the reload window.
+    So only reload when something *other* than the token changed (e.g. reauth
+    updated credentials / tenant id / temperature unit).
+    """
+    coordinator: KohlerKonnectCoordinator | None = hass.data.get(DOMAIN, {}).get(
+        entry.entry_id
+    )
+    if coordinator is not None:
+        new_config = {
+            k: v for k, v in entry.data.items() if k != CONF_B2C_REFRESH_TOKEN
+        }
+        if new_config == coordinator.loaded_config:
+            # Only the rotating refresh token changed — nothing to reload.
+            return
     await hass.config_entries.async_reload(entry.entry_id)
 
 

@@ -7,10 +7,9 @@ from datetime import UTC, datetime
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
-    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, UnitOfVolume
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -38,7 +37,6 @@ async def async_setup_entry(
             KohlerWarmupStateSensor(coordinator, device),
             KohlerActivePresetSensor(coordinator, device),
             KohlerSystemStateSensor(coordinator, device),
-            KohlerSessionVolumeSensor(coordinator, device),
             KohlerLastConnectedSensor(coordinator, device),
         ]
     async_add_entities(entities)
@@ -161,33 +159,6 @@ class KohlerSystemStateSensor(KohlerBaseSensor, SensorEntity):
         if state is None:
             return None
         return state.state.current_system_state.value
-
-
-class KohlerSessionVolumeSensor(KohlerBaseSensor, SensorEntity):
-    """Water volume used in the current/last shower session."""
-
-    _attr_name = "Session Volume"
-    _attr_icon = "mdi:water"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    @property
-    def native_unit_of_measurement(self) -> str:
-        # Kohler reports volume in the account's water unit ("Standard" = US
-        # customary, i.e. gallons).
-        if self.coordinator.water_units == "Liters":
-            return UnitOfVolume.LITERS
-        return UnitOfVolume.GALLONS
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._device_id}_session_volume"
-
-    @property
-    def native_value(self) -> int | None:
-        state = self._state
-        if state is None:
-            return None
-        return state.state.total_volume
 
 
 class KohlerLastConnectedSensor(KohlerBaseSensor, SensorEntity):
