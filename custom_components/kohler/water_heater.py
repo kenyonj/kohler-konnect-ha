@@ -27,6 +27,7 @@ from .const import (
     SERVICE_START_PRESET,
     SERVICE_START_WARMUP,
     SERVICE_STOP_SHOWER,
+    WARMUP_DISABLED_MESSAGE,
 )
 from .entity import KohlerEntity
 from .helpers import build_off_control, clamp_encode_temp, from_celsius, to_celsius
@@ -187,6 +188,17 @@ class KohlerAnthemShower(KohlerEntity, WaterHeaterEntity):
 
     # -- commands ---------------------------------------------------------- #
 
+    def _guard_warmup_enabled(self) -> None:
+        """Block a warmup command when the feature is disabled on the fixture.
+
+        Kohler's cloud accepts the warmup command even when warmup is turned
+        off on the shower, then the device ignores it — so without this guard
+        the warmup control silently does nothing. Raise a clear error instead.
+        Unknown state (no data read yet) is allowed through.
+        """
+        if self.coordinator.is_warmup_enabled(self._device_id) is False:
+            raise HomeAssistantError(WARMUP_DISABLED_MESSAGE)
+
     def _target_celsius(self) -> float:
         """Current target as Celsius for the library write API."""
         target = self.target_temperature or self._default_target
@@ -271,6 +283,7 @@ class KohlerAnthemShower(KohlerEntity, WaterHeaterEntity):
         tenant_id = self.coordinator.tenant_id
 
         if operation_mode == OPERATION_WARMUP:
+            self._guard_warmup_enabled()
             coro = client.start_warmup(tenant_id, self._device_id)
         elif operation_mode == OPERATION_OFF:
             coro = self._async_turn_off()
@@ -316,6 +329,7 @@ class KohlerAnthemShower(KohlerEntity, WaterHeaterEntity):
 
     async def async_start_warmup(self) -> None:
         """Start warmup (kohler.start_warmup service)."""
+        self._guard_warmup_enabled()
         await self._run_command_and_refresh(
             OPERATION_WARMUP,
             self.coordinator.client.start_warmup(

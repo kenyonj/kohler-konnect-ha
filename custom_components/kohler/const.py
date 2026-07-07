@@ -41,6 +41,26 @@ DEFAULT_APIM_KEY = "429ecb1d0b5e4258aa0a2bfadd82a493"
 SKU_GCS = "GCS"
 
 # ---------------------------------------------------------------------------
+# Device-state literals
+# ---------------------------------------------------------------------------
+# The device-state payload's warmUpState carries TWO fields: `state`
+# (warmUpInProgress / warmUpNotInProgress — is it running now) and `warmUp`
+# (warmUpEnabled / warmUpDisabled — is the feature turned on at all). When
+# warmup is disabled on the fixture, Kohler's cloud still ACCEPTS the warmup
+# command (HTTP 200) but the device silently ignores it — so a warmup toggle
+# looks like it does nothing. We read this flag to surface that state and to
+# block the command with a clear message instead of a silent no-op.
+WARMUP_DISABLED = "warmUpDisabled"
+
+# User-facing message when a warmup command is blocked because the feature is
+# turned off on the fixture. Kept here so the switch and water_heater surfaces
+# word it identically.
+WARMUP_DISABLED_MESSAGE = (
+    "Warmup is turned off on the shower itself, so the command has no effect. "
+    "Enable Warm Up for this shower in the Kohler Konnect app, then try again."
+)
+
+# ---------------------------------------------------------------------------
 # Entity services (registered on the water_heater platform).
 # ---------------------------------------------------------------------------
 SERVICE_START_PRESET = "start_preset"
