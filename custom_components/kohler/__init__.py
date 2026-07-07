@@ -161,6 +161,14 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
         self.client = client
         self.tenant_id = tenant_id
         self.devices = devices
+        # Snapshot of the reload-relevant config: everything EXCEPT the rotating
+        # B2C refresh token. The update listener diffs against this so that a
+        # bare token rotation (persisted on every poll after a write) does NOT
+        # reload the entry — reloading flaps every entity to `unavailable` for
+        # the reload window.
+        self.loaded_config = {
+            k: v for k, v in entry.data.items() if k != CONF_B2C_REFRESH_TOKEN
+        }
         # The account's water volume unit ("Gallons"/"Liters"/"Standard").
         self.water_units = water_units
         # The Kohler account's temperature unit ("Celsius"/"Fahrenheit"). The
@@ -375,7 +383,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the entry when its options/data change (e.g. after reauth)."""
+    """Reload the entry when its *reload-relevant* config changes.
+
+    The coordinator persists the B2C refresh token on every poll after a write
+    (B2C rotates it on each silent refresh). That persistence goes through
+    ``async_update_entry``, which fires this listener — but a bare token
+    rotation must NOT reload the entry: a reload tears down and rebuilds every
+    platform, flapping all entities to ``unavailable`` for the reload window.
+    So only reload when something *other* than the token changed (e.g. reauth
+    updated credentials / tenant id / temperature unit).
+    """
+    coordinator: KohlerKonnectCoordinator | None = hass.data.get(DOMAIN, {}).get(
+        entry.entry_id
+    )
+    if coordinator is not None:
+        new_config = {
+            k: v for k, v in entry.data.items() if k != CONF_B2C_REFRESH_TOKEN
+        }
+        if new_config == coordinator.loaded_config:
+            # Only the rotating refresh token changed — nothing to reload.
+            return
     await hass.config_entries.async_reload(entry.entry_id)
 
 
