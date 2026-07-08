@@ -309,23 +309,31 @@ class KohlerAnthemShower(KohlerEntity, WaterHeaterEntity):
     # -- entity services ---------------------------------------------------- #
 
     async def async_start_preset(self, preset_id: int) -> None:
-        """Start a preset/experience by id (kohler.start_preset service)."""
+        """Start a preset by id (kohler.start_preset service).
+
+        Routes through the coordinator's async_start_preset, which sends the
+        corrected two-step (select + mode-0x01 valve write) and raises a clear
+        error for experiences, which can't be started from HA.
+        """
         presets = self.coordinator.presets.get(self._device_id)
         preset = presets.get_preset(preset_id) if presets else None
-        if presets is not None and preset is None:
-            known = ", ".join(p.preset_id for p in presets.presets) or "none"
+        if preset is None:
+            known = (
+                ", ".join(p.preset_id for p in presets.presets)
+                if presets and presets.presets
+                else "none"
+            )
             raise HomeAssistantError(
                 f"Unknown Kohler preset id {preset_id} (known ids: {known})"
             )
-        await self._run_command_and_refresh(
-            OPERATION_RUNNING,
-            self.coordinator.client.start_preset(
-                self.coordinator.tenant_id,
-                self._device_id,
-                preset_id,
-                valve_details=preset.valve_details if preset else None,
-            ),
-        )
+        self._optimistic_operation = OPERATION_RUNNING
+        self.async_write_ha_state()
+        try:
+            await self.coordinator.async_start_preset(self._device_id, preset)
+        except Exception:
+            self._optimistic_operation = None
+            self.async_write_ha_state()
+            raise
 
     async def async_start_warmup(self) -> None:
         """Start warmup (kohler.start_warmup service)."""

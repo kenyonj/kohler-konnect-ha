@@ -97,21 +97,17 @@ class KohlerPresetSelect(KohlerEntity, SelectEntity):
             await run_device_command(
                 client.stop_preset(tenant_id, self._device_id), "stop preset"
             )
-        else:
-            preset = self._labels_to_presets().get(option)
-            if preset is None:
-                _LOGGER.warning("Unknown Kohler preset option selected: %s", option)
-                return
-            await run_device_command(
-                client.start_preset(
-                    tenant_id,
-                    self._device_id,
-                    preset.id,
-                    valve_details=preset.valve_details,
-                ),
-                f"start preset {option}",
-            )
-        await self.coordinator.async_request_refresh()
+            await self.coordinator.async_request_refresh()
+            return
+
+        preset = self._labels_to_presets().get(option)
+        if preset is None:
+            _LOGGER.warning("Unknown Kohler preset option selected: %s", option)
+            return
+        # async_start_preset does the correct two-step (select + mode-0x01 valve
+        # write) and raises a clear error for experiences, which can't be
+        # started from HA. It requests a refresh itself.
+        await self.coordinator.async_start_preset(self._device_id, preset)
 
 
 class KohlerOutletSelect(KohlerEntity, SelectEntity):
