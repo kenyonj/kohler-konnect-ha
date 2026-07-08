@@ -29,7 +29,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from kohler_anthem import KohlerAnthemClient, KohlerConfig
 from kohler_anthem.exceptions import AuthenticationError, KohlerAnthemError
-from kohler_anthem.models import Device, DeviceState, Outlet, PresetResponse
+from kohler_anthem.models import Device, DeviceState, Outlet, Preset, PresetResponse
 
 from .const import (
     CONF_API_RESOURCE,
@@ -45,6 +45,7 @@ from .const import (
     SCAN_INTERVAL,
     WARMUP_DISABLED,
 )
+from .helpers import build_preset_valve_control, preset_has_valve_data
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -245,6 +246,55 @@ class KohlerKonnectCoordinator(DataUpdateCoordinator[dict[str, DeviceState]]):
                 flow_percent=runtime.flow_percent,
             ),
             action,
+        )
+        await self.async_request_refresh()
+
+    async def async_start_preset(self, device_id: str, preset: Preset) -> None:
+        """Start a preset: select it, then open its valves with mode 0x01.
+
+        This replaces the library's ``client.start_preset``, which builds the
+        valve write with mode ``0x40`` (STOP) and so never actually runs water
+        (verified live on the hardware — see ``build_preset_valve_control``).
+
+        Two device commands, matching what the Kohler app sends:
+
+        1. ``controlpresetorexperience`` — selects the preset on the controller.
+        2. ``solowritesystem`` — opens the preset's valves at its stored
+           temp/flow with mode ``0x01`` (SHOWER / on).
+
+        Raises ``HomeAssistantError`` for "experiences" (Wake Up, Shine, …),
+        which carry no valve data and cannot be started through the device API;
+        they must be started from the Kohler Konnect app.
+        """
+        from homeassistant.exceptions import HomeAssistantError
+
+        if not preset_has_valve_data(preset):
+            raise HomeAssistantError(
+                f"'{preset.title or preset.preset_id}' is a Kohler "
+                "\"experience\", which can't be started from Home Assistant — "
+                "experiences carry no valve settings and the shower ignores the "
+                "command. Start it from the Kohler Konnect app instead. Regular "
+                "presets (e.g. Default shower) work from here."
+            )
+
+        # Step 1: select the preset on the controller. Calling the library's
+        # start_preset with valve_details=None sends only the
+        # controlpresetorexperience POST (no valve write) — verified live that
+        # this selects the preset without opening any valve on its own.
+        await run_device_command(
+            self.client.start_preset(
+                self.tenant_id, device_id, preset.id, valve_details=None
+            ),
+            f"select preset {preset.title or preset.preset_id}",
+        )
+        # Step 2: open the valves with the corrected (mode 0x01) command.
+        await run_device_command(
+            self.client.control_valve(
+                self.tenant_id,
+                device_id,
+                build_preset_valve_control(preset),
+            ),
+            f"start preset {preset.title or preset.preset_id}",
         )
         await self.async_request_refresh()
 

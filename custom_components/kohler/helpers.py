@@ -8,7 +8,13 @@ speak the same 4-byte-per-valve dialect.
 from __future__ import annotations
 
 from kohler_anthem import encode_valve_command
-from kohler_anthem.models import DeviceState, ValveControlModel, ValveMode, ValvePrefix
+from kohler_anthem.models import (
+    DeviceState,
+    Preset,
+    ValveControlModel,
+    ValveMode,
+    ValvePrefix,
+)
 
 # Maps the API's valveIndex names to the solowritesystem payload field and the
 # valve-prefix byte the firmware expects in each 4-byte command.
@@ -85,4 +91,53 @@ def build_off_control(state: DeviceState | None, temp_c: float) -> ValveControlM
             mode=ValveMode.OFF,
             prefix=ValvePrefix.PRIMARY,
         )
+    return ValveControlModel(**kwargs)
+
+
+# The preset's stored hexString is 3 bytes: [outlet-enable mask][temp][flow].
+# The solowritesystem command needs 4 bytes: [valve-prefix][temp][flow][mode].
+# A preset "hexString" of "000000" (or None) means that valve is unused.
+PRESET_HEX_UNUSED = {None, "", "000000"}
+
+
+def preset_has_valve_data(preset: Preset) -> bool:
+    """True if the preset carries at least one usable valve hexString.
+
+    "Experiences" (Kohler's app-authored programs, e.g. Wake Up) come back with
+    every ``hexString`` null/empty and cannot be started through the device
+    API — only real presets carry the per-valve temp/flow bytes we need to open
+    a valve. Verified live: sending ``controlpresetorexperience`` for an
+    experience returns HTTP 201 but the device ignores it (no valve data, no
+    water). Callers use this to fail loudly instead of silently no-opping.
+    """
+    return any(
+        (v.hex_string or "").strip() not in PRESET_HEX_UNUSED
+        for v in preset.valve_details
+    )
+
+
+def build_preset_valve_control(preset: Preset) -> ValveControlModel:
+    """Build a solowritesystem payload that STARTS a preset's valves.
+
+    Each preset valve stores a 3-byte ``[outletMask][temp][flow]`` hexString.
+    We re-emit it as the firmware's 4-byte ``[prefix][temp][flow][mode]`` form
+    with mode ``0x01`` (SHOWER / on).
+
+    This is the crux of the preset-start fix. The upstream ``kohler-anthem``
+    library builds this same command with mode ``0x40`` — which its own enum
+    names ``STOP`` — so activating a preset sent the valves a *stop* command and
+    nothing happened. Verified live on the hardware: the identical bytes with
+    mode ``0x01`` open the valve and run water; mode ``0x40`` does not.
+    """
+    kwargs: dict[str, str] = {}
+    for valve in preset.valve_details:
+        mapping = VALVE_FIELD_AND_PREFIX.get(valve.valve_index)
+        hex_string = (valve.hex_string or "").strip()
+        if mapping is None or hex_string in PRESET_HEX_UNUSED or len(hex_string) < 6:
+            continue
+        field, prefix = mapping
+        # Carry the preset's own temp+flow bytes through unchanged; only the
+        # prefix and the mode byte are ours to set.
+        temp_flow = hex_string[2:6]
+        kwargs[field] = f"{int(prefix):02X}{temp_flow}{int(ValveMode.SHOWER):02X}"
     return ValveControlModel(**kwargs)
